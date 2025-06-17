@@ -20,6 +20,7 @@ dependencies = [
     "psycopg2-binary>=2.9.10",
     "aiohttp>=3.12.6",
     "requests>=2.32.3",
+    "supabase>=2.15.3",
 ]
 
 [dependency-groups]

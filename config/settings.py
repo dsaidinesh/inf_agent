@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     debug: bool = True
+    base_url: str = "https://b900-2409-40c0-35-e3cf-c173-2553-7720-a461.ngrok-free.app/"  # Removed trailing slash to fix double slash in URLs
     
     # AI Configuration
     max_embedding_length: int = 512

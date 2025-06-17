@@ -17,6 +17,7 @@ from .pricing import PricingService
 from .database import DatabaseService
 from .email_service import EmailService, email_service
 from .contract_service import ContractService, contract_service
+from .analytics_service import CallAnalyticsService, analytics_service
 
 # Legacy services (backward compatibility)
 from .voice import VoiceService
@@ -31,6 +32,8 @@ __all__ = [
     "email_service",
     "ContractService",
     "contract_service",
+    "CallAnalyticsService",
+    "analytics_service",
     
     # Legacy (backward compatibility)
     "VoiceService"

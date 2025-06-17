@@ -13,6 +13,14 @@ from config.settings import settings
 # Set up logging
 logger = logging.getLogger(__name__)
 
+# Import Supabase database service for email logging
+try:
+    from .supabase_database import supabase_db
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
+    logger.warning("⚠️ Supabase database service not available for email logging")
+
 class EmailService:
     """
     Email service using SendGrid for sending contracts and notifications
@@ -72,14 +80,18 @@ class EmailService:
                 campaign_details=campaign_details
             )
             
-            # Send the email
+            # Send the email with enhanced logging
             success = await self._send_email(
                 to_email=to_email,
                 subject=subject,
                 html_content=html_content,
                 text_content=text_content,
                 contract_content=contract_content,
-                contract_filename=contract_filename
+                contract_filename=contract_filename,
+                email_type="contract",
+                campaign_id=campaign_details.get("campaign_id"),
+                creator_id=campaign_details.get("creator_id"),
+                recipient_name=to_name
             )
             
             if success:
@@ -120,7 +132,8 @@ class EmailService:
                 to_email=to_email,
                 subject=subject,
                 html_content=html_content,
-                text_content=text_content
+                text_content=text_content,
+                email_type="notification"
             )
             
             if success:
@@ -141,17 +154,38 @@ class EmailService:
         html_content: str,
         text_content: str,
         contract_content: Optional[str] = None,
-        contract_filename: Optional[str] = None
+        contract_filename: Optional[str] = None,
+        email_type: str = "notification",
+        campaign_id: Optional[str] = None,
+        creator_id: Optional[str] = None,
+        recipient_name: Optional[str] = None
     ) -> bool:
         """
-        Internal method to send email using SendGrid
+        Enhanced internal method to send email using SendGrid with Supabase logging
         """
+        email_log_id = None
+        sendgrid_message_id = None
+        
         try:
+            # Log email attempt to Supabase before sending
+            if SUPABASE_AVAILABLE and campaign_id:
+                email_log_id = await supabase_db.log_email_sent(
+                    campaign_id=campaign_id,
+                    creator_id=creator_id,
+                    email_type=email_type,
+                    recipient_email=to_email,
+                    recipient_name=recipient_name or "Unknown",
+                    subject=subject,
+                    content_preview=text_content[:200],
+                    sendgrid_message_id=None  # Will be updated after sending
+                )
+            
             # If no SendGrid client, run in mock mode
             if not self.sg:
                 logger.info(f"📧 MOCK EMAIL: Would send to {to_email}")
                 logger.info(f"   Subject: {subject}")
                 logger.info(f"   Content preview: {text_content[:100]}...")
+                logger.info(f"   Email logged with ID: {email_log_id}")
                 return True
             
             # Create the email message
@@ -172,17 +206,56 @@ class EmailService:
             # Send the email
             response = self.sg.send(message)
             
+            # Extract SendGrid message ID from response headers if available
+            if hasattr(response, 'headers') and 'X-Message-Id' in response.headers:
+                sendgrid_message_id = response.headers['X-Message-Id']
+            
             # Check if email was sent successfully
             if response.status_code in [200, 201, 202]:
                 logger.info(f"✅ Email sent successfully. Status: {response.status_code}")
+                logger.info(f"   SendGrid Message ID: {sendgrid_message_id}")
+                
+                # Update email log with SendGrid message ID if available
+                if SUPABASE_AVAILABLE and email_log_id and sendgrid_message_id:
+                    try:
+                        supabase_db.supabase.table("email_logs").update({
+                            "sendgrid_message_id": sendgrid_message_id,
+                            "status": "delivered",
+                            "delivered_at": datetime.now().isoformat()
+                        }).eq("id", email_log_id).execute()
+                    except Exception as update_error:
+                        logger.warning(f"⚠️ Could not update email log: {update_error}")
+                
                 return True
             else:
                 logger.error(f"❌ SendGrid returned status: {response.status_code}")
                 logger.error(f"   Response body: {response.body}")
+                
+                # Update email log with failure status
+                if SUPABASE_AVAILABLE and email_log_id:
+                    try:
+                        supabase_db.supabase.table("email_logs").update({
+                            "status": "failed",
+                            "error_message": f"SendGrid status: {response.status_code}"
+                        }).eq("id", email_log_id).execute()
+                    except Exception as update_error:
+                        logger.warning(f"⚠️ Could not update email log: {update_error}")
+                
                 return False
                 
         except Exception as e:
             logger.error(f"❌ SendGrid API error: {str(e)}")
+            
+            # Update email log with error status
+            if SUPABASE_AVAILABLE and email_log_id:
+                try:
+                    supabase_db.supabase.table("email_logs").update({
+                        "status": "failed",
+                        "error_message": str(e)
+                    }).eq("id", email_log_id).execute()
+                except Exception as update_error:
+                    logger.warning(f"⚠️ Could not update email log: {update_error}")
+            
             return False
     
     def _create_contract_attachment(self, contract_content: str, filename: str) -> Optional[Attachment]:

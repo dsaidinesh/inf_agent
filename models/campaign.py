@@ -24,6 +24,10 @@ class CampaignWebhook(BaseModel):
     campaign_goal: str
     product_niche: str
     total_budget: float
+    # 🚀 NEW: Sponsor contact information
+    sponsor_email: Optional[str] = None
+    sponsor_name: Optional[str] = None
+    sponsor_phone: Optional[str] = None
 
 class CampaignData(BaseModel):
     """Internal campaign representation"""
@@ -39,6 +43,13 @@ class CampaignData(BaseModel):
     status: CampaignStatus = CampaignStatus.ACTIVE
     influencer_count: int = 0
     campaign_code: Optional[str] = None
+    
+    # 🚀 NEW: Sponsor contact information
+    sponsor_email: Optional[str] = None
+    sponsor_name: Optional[str] = None
+    sponsor_phone: Optional[str] = None
+    sponsor_company: Optional[str] = None  # Can differ from brand_name
+    
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -371,5 +382,8 @@ def create_campaign_from_webhook(webhook_data: CampaignWebhook) -> CampaignData:
         target_audience=webhook_data.target_audience,
         campaign_goal=webhook_data.campaign_goal,
         product_niche=webhook_data.product_niche,
-        total_budget=webhook_data.total_budget
+        total_budget=webhook_data.total_budget,
+        sponsor_email=webhook_data.sponsor_email,
+        sponsor_name=webhook_data.sponsor_name,
+        sponsor_phone=webhook_data.sponsor_phone
     )

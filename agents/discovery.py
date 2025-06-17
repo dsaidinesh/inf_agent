@@ -4,7 +4,7 @@ import logging
 from typing import List, Dict, Any
 from pathlib import Path
 
-from models.campaign import CampaignData,Creator, CreatorMatch
+from models.campaign import CampaignData,Creator, CreatorMatch, Platform, Availability
 from services.embeddings import EmbeddingService
 from services.pricing import PricingService
 
@@ -24,36 +24,100 @@ class InfluencerDiscoveryAgent:
         self.creators_data = self._load_creators_data()
     
     def _load_creators_data(self) -> List[Creator]:
-        """Load creators from JSON file"""
+        """Load creators from Supabase database (preferred) or fallback to mock data"""
         try:
+            # First try to load from Supabase database
+            creators = self._load_creators_from_supabase()
+            if creators:
+                logger.info(f"✅ Successfully loaded {len(creators)} creators from Supabase database")
+                return creators
+            
+            # Fallback to JSON file (legacy)
             creators_file = Path("data/creators.json")
-            if not creators_file.exists():
-                logger.warning("creators.json not found, using mock data")
-                return self._get_mock_creators()
+            if creators_file.exists():
+                logger.warning("📁 Supabase not available, trying JSON file...")
+                with open(creators_file, 'r') as f:
+                    data = json.load(f)
+                
+                creators = []
+                creators_list = data.get("creators", [])
+                logger.info(f"Found {len(creators_list)} creators in JSON file")
+                
+                for creator_data in creators_list:
+                    try:
+                        creator = Creator(**creator_data)
+                        creators.append(creator)
+                    except Exception as e:
+                        logger.error(f"❌ Failed to parse creator {creator_data.get('name', 'unknown')}: {e}")
+                
+                logger.info(f"Successfully loaded {len(creators)} creators from file")
+                return creators
             
-            with open(creators_file, 'r') as f:
-                data = json.load(f)
-            
-            creators = []
-            creators_list = data.get("creators", [])
-            logger.info(f"Found {len(creators_list)} creators in JSON file")
-            
-            for creator_data in creators_list:
-                try:
-                    logger.info(f"Parsing creator: {creator_data.get('name', 'unknown')}")
-                    creator = Creator(**creator_data)
-                    creators.append(creator)
-                    logger.info(f"✅ Successfully parsed: {creator.name}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to parse creator {creator_data.get('name', 'unknown')}: {e}")
-                    logger.error(f"   Creator data keys: {list(creator_data.keys())}")
-            
-            logger.info(f"Successfully loaded {len(creators)} creators from file")
-            return creators
+            # Final fallback to mock data
+            logger.warning("⚠️ No database or file available, using mock data")
+            return self._get_mock_creators()
             
         except Exception as e:
             logger.error(f"Failed to load creators data: {e}")
             return self._get_mock_creators()
+            
+    def _load_creators_from_supabase(self) -> List[Creator]:
+        """Load creators from Supabase database"""
+        try:
+            # Import database service
+            from services.supabase_database import SupabaseDatabaseService
+            
+            db_service = SupabaseDatabaseService()
+            if not db_service.supabase:
+                logger.warning("⚠️ Supabase not available in discovery agent")
+                return []
+            
+            # Query all creators from database
+            result = db_service.supabase.table("creators").select("*").execute()
+            
+            if not result.data:
+                logger.warning("⚠️ No creators found in Supabase database")
+                return []
+            
+            creators = []
+            for creator_row in result.data:
+                try:
+                    # Convert database row to Creator object with proper field mapping
+                    creator = Creator(
+                        id=creator_row["id"],
+                        name=creator_row["name"],
+                        email=creator_row.get("email", ""),
+                        platform=self._safe_platform_conversion(creator_row.get("platform", "youtube")),
+                        followers=creator_row.get("followers_count_numeric") or 0,
+                        niche=creator_row.get("niche", "general"),
+                        typical_rate=float(creator_row.get("collaboration_rate") or creator_row.get("typical_rate") or 1000),
+                        engagement_rate=float(creator_row.get("engagement_rate") or 0.0),
+                        average_views=int(creator_row.get("avg_views") or creator_row.get("average_views") or 0),
+                        last_campaign_date="2024-01-01",  # Default date since column doesn't exist
+                        availability=self._safe_availability_conversion("good"),  # Default value since column doesn't exist
+                        location=creator_row.get("country") or creator_row.get("location") or "Unknown",
+                        phone_number=creator_row.get("phone_number", ""),  # THIS IS THE KEY FIX!
+                        languages=["English"],  # Default since column doesn't exist
+                        specialties=[],  # Default since column doesn't exist
+                        audience_demographics={},  # Default since column doesn't exist
+                        performance_metrics={},  # Default since column doesn't exist
+                        recent_campaigns=[],  # Default since column doesn't exist
+                        rate_history={},  # Default since column doesn't exist
+                        preferred_collaboration_style=""  # Default since column doesn't exist
+                    )
+                    creators.append(creator)
+                    logger.debug(f"✅ Loaded creator from DB: {creator.name} - {creator.phone_number}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error parsing creator {creator_row.get('name', 'unknown')}: {str(e)}")
+                    continue
+            
+            logger.info(f"🎯 Loaded {len(creators)} creators from Supabase database")
+            return creators
+            
+        except Exception as e:
+            logger.error(f"❌ Error loading creators from Supabase: {str(e)}")
+            return []
     
     def _get_mock_creators(self) -> List[Creator]:
         """Get mock creators for testing when file is not available"""
@@ -71,7 +135,7 @@ class InfluencerDiscoveryAgent:
                 "last_campaign_date": "2024-10-15",
                 "availability": "good",
                 "location": "Mumbai, India",
-                "phone_number": "+918806859890",
+                "phone_number": "+91 7013543557",  # Updated to match database
                 "languages": ["English", "Hindi"],
                 "specialties": ["smartphone_reviews", "gadget_unboxing", "tech_tutorials"],
                 "audience_demographics": {"age_18_24": 35, "age_25_34": 40, "male": 70, "female": 30},
@@ -93,7 +157,7 @@ class InfluencerDiscoveryAgent:
                 "last_campaign_date": "2024-11-01",
                 "availability": "limited",
                 "location": "Los Angeles, USA",
-                "phone_number": "+918806859890",
+                "phone_number": "+91 7013543557",  # Updated to match database
                 "languages": ["English", "Spanish"],
                 "specialties": ["workout_routines", "supplement_reviews", "fitness_gear"],
                 "audience_demographics": {"age_18_24": 25, "age_25_34": 45, "male": 60, "female": 40},
@@ -115,7 +179,7 @@ class InfluencerDiscoveryAgent:
                 "last_campaign_date": "2024-11-20",
                 "availability": "busy",
                 "location": "Delhi, India",
-                "phone_number": "+918806859890",
+                "phone_number": "+91 7013543557",  # Updated to match database
                 "languages": ["English", "Hindi", "Punjabi"],
                 "specialties": ["makeup_tutorials", "skincare_reviews", "fashion_hauls"],
                 "audience_demographics": {"age_18_24": 50, "age_25_34": 35, "male": 15, "female": 85},
@@ -273,7 +337,7 @@ class InfluencerDiscoveryAgent:
                     last_campaign_date="2024-11-01",
                     availability=Availability.GOOD,
                     location="Mumbai, India",
-                    phone_number="+918806859890",
+                    phone_number="+91 7013543557",  # Updated to match database
                     languages=["English", "Hindi"],
                     specialties=["tech_reviews", "gadget_unboxing"],
                     preferred_collaboration_style="Professional and detail-oriented"
@@ -291,7 +355,7 @@ class InfluencerDiscoveryAgent:
                     last_campaign_date="2024-10-15",
                     availability=Availability.EXCELLENT,
                     location="Delhi, India",
-                    phone_number="+918806859891",
+                    phone_number="+91 7013543557",  # Updated to match database
                     languages=["English"],
                     specialties=["product_reviews", "tech_tutorials"],
                     preferred_collaboration_style="Creative and engaging"
@@ -445,3 +509,59 @@ class InfluencerDiscoveryAgent:
         
         logger.info("🎭 Using mock matches for demo")
         return mock_matches
+        
+    def _safe_platform_conversion(self, platform: str) -> Platform:
+        """Convert platform string to Platform enum safely"""
+        try:
+            # Map common platform values to enum values
+            platform_map = {
+                "youtube": Platform.YOUTUBE,
+                "youtube.com": Platform.YOUTUBE,
+                "instagram": Platform.INSTAGRAM,
+                "tiktok": Platform.TIKTOK,
+                "twitch": Platform.TWITCH,
+                "twitch.tv": Platform.TWITCH
+            }
+            
+            platform_lower = platform.lower().strip()
+            
+            # Try direct mapping first
+            if platform_lower in platform_map:
+                return platform_map[platform_lower]
+            
+            # Try enum value directly (capitalized)
+            try:
+                return Platform(platform.title())
+            except ValueError:
+                pass
+            
+            # Default fallback
+            logger.warning(f"⚠️ Unknown platform '{platform}', defaulting to YouTube")
+            return Platform.YOUTUBE
+            
+        except Exception as e:
+            logger.error(f"❌ Error converting platform '{platform}': {str(e)}")
+            return Platform.YOUTUBE
+
+    def _safe_availability_conversion(self, availability: str = "good") -> Availability:
+        """Convert availability string to Availability enum safely"""
+        try:
+            # Map common availability values
+            availability_map = {
+                "excellent": Availability.EXCELLENT,
+                "good": Availability.GOOD,
+                "limited": Availability.LIMITED,
+                "busy": Availability.BUSY
+            }
+            
+            availability_lower = availability.lower().strip()
+            
+            if availability_lower in availability_map:
+                return availability_map[availability_lower]
+            
+            # Default to good availability
+            return Availability.GOOD
+            
+        except Exception as e:
+            logger.error(f"❌ Error converting availability '{availability}': {str(e)}")
+            return Availability.GOOD

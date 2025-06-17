@@ -88,6 +88,14 @@ app.add_middleware(
 app.include_router(enhanced_webhook_router, prefix="/api/webhook", tags=["Enhanced Webhooks"])
 app.include_router(monitoring_router, prefix="/api/monitor", tags=["Monitoring"])
 
+# Import and include decision router
+from api.decision_api import decision_router
+app.include_router(decision_router, prefix="/api/decision", tags=["Sponsor Decisions"])
+
+# Import and include campaign trigger router
+from api.campaign_trigger import campaign_trigger_router
+app.include_router(campaign_trigger_router, prefix="/api/campaign-trigger", tags=["Campaign Triggers"])
+
 @app.get("/")
 async def root():
     """Root endpoint with platform status"""

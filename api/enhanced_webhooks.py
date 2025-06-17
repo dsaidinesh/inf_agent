@@ -553,3 +553,136 @@ async def get_enhanced_system_status():
             "message": str(e),
             "system_health": "degraded"
         }
+
+@enhanced_webhook_router.post("/process-completed-call")
+async def process_completed_call(call_completion_data: Dict[str, Any]):
+    """
+    📊 NEW: Process completed call and send analytics to sponsor
+    This is the main entry point for your post-call analytics workflow
+    
+    Required fields:
+    - call_data: Information about the completed call
+    - campaign_data: Campaign details (should include sponsor_email if known)
+    - creator_email: Creator's email for contract/regret emails
+    
+    Optional fields:
+    - sponsor_email: Sponsor's email (will be auto-detected if not provided)
+    """
+    try:
+        logger.info("📊 Processing completed call for analytics...")
+        
+        # Import analytics service here to avoid circular imports
+        from services.analytics_service import analytics_service
+        
+        # Extract required data from the request
+        call_data = call_completion_data.get("call_data", {})
+        campaign_data = call_completion_data.get("campaign_data", {})
+        sponsor_email = call_completion_data.get("sponsor_email")  # Optional now
+        creator_email = call_completion_data.get("creator_email")
+        
+        # Validate required fields
+        if not creator_email:
+            raise HTTPException(400, "creator_email is required")
+        
+        # Verify creator email exists in our database
+        creator_verified = await _verify_creator_email(creator_email)
+        if not creator_verified:
+            logger.warning(f"⚠️ Creator email not found in database: {creator_email}")
+            # Don't fail the request, but log for tracking
+        
+        logger.info(f"📞 Call completed: {call_data.get('conversation_id', 'N/A')}")
+        if sponsor_email:
+            logger.info(f"📧 Sponsor email provided: {sponsor_email}")
+        else:
+            logger.info(f"📧 No sponsor email provided - will auto-detect from campaign data")
+        logger.info(f"👤 Creator email: {creator_email} {'✅ Verified' if creator_verified else '⚠️ Not in database'}")
+        
+        # Process the completed call through analytics service
+        result = await analytics_service.process_completed_call(
+            call_data=call_data,
+            campaign_data=campaign_data,
+            sponsor_email=sponsor_email,  # Optional - service will auto-detect
+            creator_email=creator_email
+        )
+        
+        if result["status"] == "success":
+            logger.info(f"✅ Analytics sent to sponsor: {result['decision_id']}")
+            
+            return {
+                "status": "success",
+                "message": "Call analytics sent to sponsor successfully",
+                "decision_id": result["decision_id"],
+                "analytics_report": result["analytics_report"],
+                "creator_verified": creator_verified,
+                "sponsor_email_used": result.get("sponsor_email_used"),  # Show which email was used
+                "next_steps": [
+                    "Analytics email sent to sponsor",
+                    "Waiting for sponsor decision (approve/reject)",
+                    "Contract or regret email will be sent to creator based on decision"
+                ],
+                "decision_urls": {
+                    "approve": f"/api/decision/approve/{result['decision_id']}",
+                    "reject": f"/api/decision/reject/{result['decision_id']}"
+                },
+                "decision_expires_at": result["decision_expires_at"],
+                "emails": {
+                    "sponsor_email": result.get("sponsor_email_used"),
+                    "creator_email": creator_email
+                }
+            }
+        else:
+            return {
+                "status": "error",
+                "message": result["message"],
+                "sponsor_email_used": result.get("sponsor_email_used")
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error processing completed call: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"Failed to process completed call: {str(e)}"
+            }
+        )
+
+async def _verify_creator_email(creator_email: str) -> bool:
+    """
+    🔍 Verify if creator email exists in our creator database
+    
+    Args:
+        creator_email: Email to verify
+        
+    Returns:
+        bool: True if creator exists, False otherwise
+    """
+    try:
+        import json
+        import os
+        
+        # Load creators data
+        creators_file = os.path.join(os.path.dirname(__file__), "..", "data", "creators.json")
+        
+        if not os.path.exists(creators_file):
+            logger.warning(f"⚠️ Creators file not found: {creators_file}")
+            return False
+            
+        with open(creators_file, 'r', encoding='utf-8') as f:
+            creators_data = json.load(f)
+        
+        # Check if email exists in creators list
+        creators = creators_data.get("creators", [])
+        for creator in creators:
+            if creator.get("email", "").lower() == creator_email.lower():
+                logger.info(f"✅ Creator verified: {creator.get('name', 'Unknown')} ({creator_email})")
+                return True
+        
+        logger.warning(f"❌ Creator email not found in database: {creator_email}")
+        return False
+        
+    except Exception as e:
+        logger.error(f"❌ Error verifying creator email: {str(e)}")
+        return False

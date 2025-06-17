@@ -6,6 +6,15 @@ from models.campaign import CampaignOrchestrationState
 
 logger = logging.getLogger(__name__)
 
+# Import enhanced Supabase database service if available
+try:
+    from .supabase_database import supabase_db
+    SUPABASE_AVAILABLE = True
+    logger.info("🚀 Enhanced Supabase database service available")
+except ImportError:
+    SUPABASE_AVAILABLE = False
+    logger.warning("⚠️ Supabase database service not available - using mock mode")
+
 class DatabaseService:
     """Service for database operations"""
     
@@ -15,23 +24,30 @@ class DatabaseService:
         logger.info("🗄️  Database service initialized (mock mode)")
     
     async def sync_campaign_results(self, orchestration_state: CampaignOrchestrationState):
-        """Sync campaign results to database"""
+        """Enhanced sync campaign results - uses Supabase if available"""
         try:
             logger.info(f"💾 Syncing campaign {orchestration_state.campaign_id} to database")
             
-            # Update campaigns table
-            await self._update_campaign_record(orchestration_state)
-            
-            # Insert outreach logs
-            await self._insert_outreach_logs(orchestration_state)
-            
-            # Insert contracts
-            await self._insert_contracts(orchestration_state)
-            
-            # Insert payments
-            await self._insert_payments(orchestration_state)
-            
-            logger.info("✅ Database sync completed")
+            # Try Supabase first, fallback to mock
+            if SUPABASE_AVAILABLE:
+                logger.info("🚀 Using enhanced Supabase database service")
+                await supabase_db.sync_campaign_results(orchestration_state)
+                logger.info("✅ Enhanced Supabase database sync completed")
+            else:
+                logger.info("📝 Using mock database service")
+                # Update campaigns table
+                await self._update_campaign_record(orchestration_state)
+                
+                # Insert outreach logs
+                await self._insert_outreach_logs(orchestration_state)
+                
+                # Insert contracts
+                await self._insert_contracts(orchestration_state)
+                
+                # Insert payments
+                await self._insert_payments(orchestration_state)
+                
+                logger.info("✅ Mock database sync completed")
             
         except Exception as e:
             logger.error(f"❌ Database sync failed: {e}")

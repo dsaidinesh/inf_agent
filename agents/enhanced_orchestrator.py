@@ -11,7 +11,7 @@ from models.campaign import (
 )
 from agents.discovery import InfluencerDiscoveryAgent
 from services.enhanced_voice import EnhancedVoiceService
-from services.contract_service import contract_service
+# from services.contract_service import contract_service  # 🚀 REPLACED with analytics workflow
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -371,7 +371,7 @@ class EnhancedCampaignOrchestrator:
         contract: Dict[str, Any]
     ):
         """
-        🚀 Send contract via email after successful negotiation
+        🚀 NEW: Send analytics to sponsor for approval BEFORE sending contract
         """
         try:
             # Get creator information from the discovered influencers
@@ -383,51 +383,80 @@ class EnhancedCampaignOrchestrator:
                         break
             
             if not creator:
-                logger.error(f"❌ Creator not found for contract email: {negotiation.creator_id}")
+                logger.error(f"❌ Creator not found for analytics: {negotiation.creator_id}")
                 return
             
-            # Prepare data for contract service
+            # 🚀 NEW: Prepare data for analytics workflow (NOT direct contract)
             call_data = {
-                "agreed_rate": negotiation.final_rate,
-                "special_terms": [],
-                "contract_id": contract["contract_id"]
-            }
-            
-            influencer_data = {
-                "name": creator.name,
-                "email": creator.email,
-                "id": creator.id
+                "conversation_id": negotiation.conversation_id or f"conv_{negotiation.creator_id}",
+                "call_duration_seconds": negotiation.call_duration_seconds or 300,
+                "status": "completed",
+                "influencer_data": {
+                    "name": creator.name,
+                    "platform": creator.platform.value if hasattr(creator.platform, 'value') else str(creator.platform),
+                    "followers": creator.followers
+                },
+                "negotiation_results": {
+                    "final_rate": negotiation.final_rate,
+                    "deliverables": negotiation.negotiated_terms.get("deliverables", ["Social media content"]),
+                    "timeline": negotiation.negotiated_terms.get("timeline", "30 days"),
+                    "creator_enthusiasm": negotiation.negotiated_terms.get("enthusiasm", 8),
+                    "special_terms": negotiation.negotiated_terms.get("special_terms", [])
+                }
             }
             
             campaign_details = {
                 "campaign_name": f"{campaign_data.brand_name} - {campaign_data.product_name}",
                 "brand_name": campaign_data.brand_name,
-                "budget": campaign_data.total_budget,
-                "deliverables": negotiation.negotiated_terms.get("deliverables", ["Social media content"]),
-                "timeline": negotiation.negotiated_terms.get("timeline", "30 days"),
-                "offered_rate": negotiation.final_rate
+                "product_name": campaign_data.product_name,
+                "total_budget": campaign_data.total_budget,
+                "offered_rate": negotiation.negotiated_terms.get("initial_offer", negotiation.final_rate),
+                # Include sponsor email if available
+                "sponsor_email": getattr(campaign_data, 'sponsor_email', None)
             }
             
-            # Send contract via email using the contract service
-            success = await contract_service.process_successful_call(
+            # 🚀 NEW: Use analytics workflow instead of direct contract sending
+            from services.analytics_service import analytics_service
+            
+            logger.info(f"📊 Sending analytics to sponsor for approval BEFORE contract")
+            logger.info(f"👤 Creator: {creator.name} ({creator.email})")
+            logger.info(f"💰 Final rate: ${negotiation.final_rate:,.2f}")
+            
+            # Send to analytics workflow for sponsor approval
+            result = await analytics_service.process_completed_call(
                 call_data=call_data,
-                influencer_data=influencer_data,
-                campaign_data=campaign_details
+                campaign_data=campaign_details,
+                sponsor_email=getattr(campaign_data, 'sponsor_email', None),  # Optional - will be auto-detected
+                creator_email=creator.email
             )
             
-            if success:
-                logger.info(f"✅ Contract email sent successfully to {creator.email}")
-                # Update contract status
-                contract["status"] = "sent"
-                contract["email_sent_at"] = datetime.now().isoformat()
-                negotiation.negotiated_terms["contract_emailed"] = True
+            if result["status"] == "success":
+                decision_id = result["decision_id"]
+                sponsor_email_used = result.get("sponsor_email_used")
+                
+                logger.info(f"✅ Analytics sent to sponsor for approval")
+                logger.info(f"📧 Sponsor email: {sponsor_email_used}")
+                logger.info(f"🔑 Decision ID: {decision_id}")
+                logger.info(f"🔗 Approval URL: /api/decision/approve/{decision_id}")
+                logger.info(f"⏰ Sponsor has 48 hours to decide")
+                
+                # Update contract status - waiting for sponsor approval
+                contract["status"] = "pending_sponsor_approval"
+                contract["decision_id"] = decision_id
+                contract["analytics_sent_at"] = datetime.now().isoformat()
+                contract["sponsor_email"] = sponsor_email_used
+                negotiation.negotiated_terms["analytics_sent"] = True
+                negotiation.negotiated_terms["decision_id"] = decision_id
+                
+                logger.info(f"⏳ Contract on hold - waiting for sponsor approval: {decision_id}")
+                
             else:
-                logger.error(f"❌ Failed to send contract email to {creator.email}")
-                contract["status"] = "email_failed"
+                logger.error(f"❌ Failed to send analytics to sponsor: {result['message']}")
+                contract["status"] = "analytics_failed"
                 
         except Exception as e:
-            logger.error(f"❌ Error sending contract email: {str(e)}")
-            contract["status"] = "email_error"
+            logger.error(f"❌ Error in analytics workflow: {str(e)}")
+            contract["status"] = "workflow_error"
     
     async def _run_completion_phase(self, state: CampaignOrchestrationState):
         """🏁 Complete campaign - simple and clean"""
