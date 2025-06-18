@@ -1,0 +1,72 @@
+# docker-compose.yml for InfluencerFlow AI Platform
+# For local development and testing
+
+version: '3.8'
+
+services:
+  # Main FastAPI application
+  influencer-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: influencer-ai-app
+    ports:
+      - "8000:7860"  # Map host 8000 to container 7860
+    environment:
+      - HOST=0.0.0.0
+      - PORT=7860
+      - DEMO_MODE=true
+      - MOCK_CALLS=true
+      - DEBUG=true
+      # Add your API keys here or use .env file
+      - GROQ_API_KEY=${GROQ_API_KEY:-your_groq_key_here}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY:-}
+    volumes:
+      # Mount for development (comment out for production)
+      - .:/app
+      # Persistent data
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - influencer-network
+
+  # Optional: PostgreSQL database for production-like testing
+  postgres:
+    image: postgres:15-alpine
+    container_name: influencer-ai-db
+    environment:
+      - POSTGRES_DB=influencerflow
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - influencer-network
+
+  # Optional: Redis for caching (if you want to add caching later)
+  redis:
+    image: redis:7-alpine
+    container_name: influencer-ai-cache
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - influencer-network
+
+volumes:
+  postgres_data:
+
+networks:
+  influencer-network:
+    driver: bridge 

@@ -10,8 +10,11 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
+import json
+import asyncio
+from typing import AsyncGenerator
 
 from services.supabase_database import SupabaseDatabaseService
 from services.enhanced_voice import EnhancedVoiceService
@@ -200,6 +203,35 @@ async def trigger_campaign_calls(
             detail=f"Failed to trigger campaign calls: {str(e)}"
         )
 
+@campaign_trigger_router.get("/trigger/{campaign_id}/stream")
+async def trigger_campaign_calls_with_streaming(
+    campaign_id: str,
+    force_refresh: bool = Query(False, description="Force new calls even if recent ones exist"),
+    max_creators: int = Query(5, description="Maximum creators to call", ge=1, le=10),
+    call_priority: str = Query("high_match", description="Priority: high_match, recent_activity, or all")
+):
+    """
+    🎯 STREAMING VERSION: Trigger AI calls for a campaign with real-time updates
+    
+    This endpoint does the same as /trigger/{campaign_id} but streams real-time updates
+    using Server-Sent Events (SSE) so you can watch the campaign progress live.
+    
+    Usage:
+    - Browser: EventSource('http://localhost:8000/api/campaign-trigger/trigger/{campaign_id}/stream')
+    - curl: curl http://localhost:8000/api/campaign-trigger/trigger/{campaign_id}/stream
+    """
+    logger.info(f"🎯 Triggering streaming campaign calls: {campaign_id}")
+    
+    return StreamingResponse(
+        _stream_campaign_execution(campaign_id, force_refresh, max_creators, call_priority),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/plain; charset=utf-8"
+        }
+    )
+
 @campaign_trigger_router.get("/monitor/{task_id}")
 async def monitor_campaign_calls(task_id: str):
     """
@@ -209,6 +241,9 @@ async def monitor_campaign_calls(task_id: str):
         # Check if task exists in active campaigns (from main.py)
         from main import active_campaigns
         
+        logger.info(f"🔍 Checking for task: {task_id}")
+        logger.info(f"📊 Active campaigns: {list(active_campaigns.keys())}")
+        
         if task_id not in active_campaigns:
             raise HTTPException(
                 status_code=404,
@@ -216,43 +251,52 @@ async def monitor_campaign_calls(task_id: str):
             )
         
         state = active_campaigns[task_id]
+        logger.info(f"📊 Found state for task: {task_id}, stage: {getattr(state, 'current_stage', 'unknown')}")
         
         # Get current status
         call_status = []
-        total_calls = len(getattr(state, 'negotiations', []))
-        completed_calls = len([n for n in getattr(state, 'negotiations', []) if n.status == 'completed'])
+        negotiations = getattr(state, 'negotiations', [])
+        total_calls = len(negotiations)
+        completed_calls = len([n for n in negotiations if getattr(n, 'status', '') == 'completed'])
         
-        for negotiation in getattr(state, 'negotiations', []):
+        for negotiation in negotiations:
             call_status.append({
-                "creator_id": negotiation.creator_id,
+                "creator_id": getattr(negotiation, 'creator_id', 'unknown'),
                 "creator_name": getattr(negotiation, 'creator_name', 'Unknown'),
                 "phone_number": getattr(negotiation, 'phone_number', 'Unknown'),
-                "call_status": negotiation.status,
-                "call_id": negotiation.conversation_id,
-                "final_rate": negotiation.final_rate,
+                "call_status": getattr(negotiation, 'status', 'unknown'),
+                "call_id": getattr(negotiation, 'conversation_id', None),
+                "final_rate": getattr(negotiation, 'final_rate', 0),
                 "call_duration": getattr(negotiation, 'call_duration_seconds', 0)
             })
         
         progress_percentage = (completed_calls / total_calls * 100) if total_calls > 0 else 0
         
-        return {
+        # Create response data
+        response_data = {
             "task_id": task_id,
-            "campaign_id": state.campaign_id,
-            "status": state.current_stage,
+            "campaign_id": getattr(state, 'campaign_id', 'unknown'),
+            "status": getattr(state, 'current_stage', 'unknown'),
             "progress_percentage": round(progress_percentage, 1),
             "total_calls": total_calls,
             "completed_calls": completed_calls,
-            "successful_negotiations": state.successful_negotiations,
+            "successful_negotiations": getattr(state, 'successful_negotiations', 0),
             "call_status": call_status,
             "started_at": getattr(state, 'created_at', datetime.now()).isoformat(),
             "estimated_completion": _estimate_completion_time(state),
-            "last_updated": datetime.now().isoformat()
+            "last_updated": datetime.now().isoformat(),
+            "error_message": getattr(state, 'error_message', None)
         }
+        
+        logger.info(f"📊 Returning monitoring data for task: {task_id}")
+        return response_data
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"❌ Monitor task failed: {str(e)}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to monitor task: {str(e)}"
@@ -612,6 +656,286 @@ async def _fetch_available_campaigns(status: str, limit: int) -> List[Dict[str, 
         logger.error(f"❌ Error fetching campaigns: {str(e)}")
         return []
 
+async def _stream_campaign_execution(
+    campaign_id: str,
+    force_refresh: bool,
+    max_creators: int,
+    call_priority: str
+) -> AsyncGenerator[str, None]:
+    """
+    Stream campaign execution with real-time updates
+    """
+    task_id = str(uuid.uuid4())
+    
+    try:
+        # Send initial update
+        yield f"data: {json.dumps({
+            'message': f'🎯 Starting campaign execution for ID: {campaign_id}',
+            'status': 'initializing',
+            'timestamp': datetime.now().isoformat(),
+            'progress': 0,
+            'data': {'task_id': task_id, 'campaign_id': campaign_id}
+        })}\n\n"
+        
+        # 1. Fetch campaign data
+        yield f"data: {json.dumps({
+            'message': '📊 Fetching campaign data from database...',
+            'status': 'fetching_campaign',
+            'timestamp': datetime.now().isoformat(),
+            'progress': 10
+        })}\n\n"
+        
+        campaign_data = await _fetch_campaign_data(campaign_id)
+        if not campaign_data:
+            yield f"data: {json.dumps({
+                'message': f'❌ Campaign not found: {campaign_id}',
+                'status': 'error',
+                'timestamp': datetime.now().isoformat(),
+                'progress': -1
+            })}\n\n"
+            return
+        
+        yield f"data: {json.dumps({
+            'message': f'✅ Campaign found: {campaign_data.brand_name} - {campaign_data.product_name}',
+            'status': 'campaign_loaded',
+            'timestamp': datetime.now().isoformat(),
+            'progress': 20,
+            'data': {
+                'brand_name': campaign_data.brand_name,
+                'product_name': campaign_data.product_name,
+                'budget': campaign_data.total_budget
+            }
+        })}\n\n"
+        
+        # 2. Find creators
+        yield f"data: {json.dumps({
+            'message': '🔍 Finding creators for this campaign...',
+            'status': 'finding_creators',
+            'timestamp': datetime.now().isoformat(),
+            'progress': 25
+        })}\n\n"
+        
+        creators = await _fetch_campaign_creators(
+            campaign_id, 
+            campaign_data,
+            max_creators,
+            call_priority,
+            force_refresh
+        )
+        
+        if not creators:
+            yield f"data: {json.dumps({
+                'message': f'⚠️ No eligible creators found for campaign {campaign_id}',
+                'status': 'no_creators',
+                'timestamp': datetime.now().isoformat(),
+                'progress': 25,
+                'data': {
+                    'suggestions': [
+                        'Try expanding the search criteria',
+                        'Check if the product niche matches available creators',
+                        'Add more creators to the database for this niche'
+                    ]
+                }
+            })}\n\n"
+            return
+        
+        # Prepare creator details (same format as regular API)
+        creator_details = [
+            {
+                "id": creator.id,
+                "name": creator.name,
+                "email": creator.email,
+                "phone": creator.phone_number,
+                "niche": creator.niche,
+                "followers": creator.followers,
+                "typical_rate": creator.typical_rate,
+                "match_score": getattr(creator, 'match_score', 0.8)
+            }
+            for creator in creators
+        ]
+        
+        yield f"data: {json.dumps({
+            'message': f'✅ Found {len(creators)} eligible creators',
+            'status': 'creators_found',
+            'timestamp': datetime.now().isoformat(),
+            'progress': 35,
+            'data': {
+                'creators_found': len(creators),
+                'calls_initiated': len(creators),
+                'estimated_duration_minutes': len(creators) * 3,
+                'creator_details': creator_details[:3]  # Show first 3 for streaming
+            }
+        })}\n\n"
+        
+        # 3. Start the same background task as the regular API, but with streaming updates
+        yield f"data: {json.dumps({
+            'message': '🚀 Starting campaign execution (same as regular API)...',
+            'status': 'starting_execution',
+            'timestamp': datetime.now().isoformat(),
+            'progress': 40
+        })}\n\n"
+        
+        # Store initial state for monitoring (same as regular API)
+        from main import active_campaigns
+        from models.campaign import CampaignOrchestrationState
+        
+        # Create initial state (same as _execute_campaign_calls)
+        initial_state = CampaignOrchestrationState(
+            campaign_id=campaign_data.id,
+            campaign_data=campaign_data,
+            current_stage="discovery",
+            started_at=datetime.now(),
+            estimated_completion_minutes=15
+        )
+        active_campaigns[task_id] = initial_state
+        
+        yield f"data: {json.dumps({
+            'message': f'📊 Campaign state stored for monitoring: {task_id}',
+            'status': 'state_stored',
+            'timestamp': datetime.now().isoformat(),
+            'progress': 45,
+            'data': {'monitor_url': f'/api/campaign-trigger/monitor/{task_id}'}
+        })}\n\n"
+        
+        # Use the enhanced orchestrator (same as _execute_campaign_calls)
+        from agents.enhanced_orchestrator import EnhancedCampaignOrchestrator
+        orchestrator = EnhancedCampaignOrchestrator()
+        
+        try:
+            yield f"data: {json.dumps({
+                'message': '🧠 Initializing enhanced orchestrator...',
+                'status': 'orchestrator_init',
+                'timestamp': datetime.now().isoformat(),
+                'progress': 50
+            })}\n\n"
+            
+            # Start orchestration task (same as background task)
+            orchestration_task = asyncio.create_task(
+                orchestrator.orchestrate_enhanced_campaign(
+                    campaign_data=campaign_data,
+                    task_id=task_id
+                )
+            )
+            
+            # Monitor progress by checking the active_campaigns state
+            last_stage = "discovery"
+            stage_progress = {
+                "discovery": 55,
+                "strategy": 65, 
+                "negotiations": 75,
+                "contracts": 85,
+                "completion": 95,
+                "completed": 100,
+                "failed": -1
+            }
+            
+            while not orchestration_task.done():
+                await asyncio.sleep(2)  # Check every 2 seconds
+                
+                # Get current state from active_campaigns
+                current_state = active_campaigns.get(task_id)
+                if current_state:
+                    current_stage = getattr(current_state, 'current_stage', 'unknown')
+                    
+                    # Update when stage changes
+                    if current_stage != last_stage:
+                        progress = stage_progress.get(current_stage, 50)
+                        
+                        stage_messages = {
+                            "discovery": "🔍 Discovering influencers...",
+                            "strategy": "🧠 Generating AI strategy...", 
+                            "negotiations": "📞 Conducting negotiations...",
+                            "contracts": "📝 Generating contracts...",
+                            "completion": "🏁 Finalizing campaign...",
+                            "completed": "✅ Campaign completed!",
+                            "failed": "❌ Campaign failed"
+                        }
+                        
+                        message = stage_messages.get(current_stage, f"Processing stage: {current_stage}")
+                        
+                        yield f"data: {json.dumps({
+                            'message': message,
+                            'status': current_stage,
+                            'timestamp': datetime.now().isoformat(),
+                            'progress': progress,
+                            'data': {
+                                'stage': current_stage,
+                                'successful_negotiations': getattr(current_state, 'successful_negotiations', 0),
+                                'total_cost': getattr(current_state, 'total_cost', 0)
+                            }
+                        })}\n\n"
+                        
+                        last_stage = current_stage
+                        
+                        # Exit if completed or failed
+                        if current_stage in ['completed', 'failed']:
+                            break
+                
+                # Timeout after 5 minutes
+                elapsed = datetime.now() - initial_state.started_at
+                if elapsed.total_seconds() > 300:
+                    yield f"data: {json.dumps({
+                        'message': '⏰ Operation timeout - taking longer than expected',
+                        'status': 'timeout_warning',
+                        'timestamp': datetime.now().isoformat(),
+                        'progress': 90
+                    })}\n\n"
+                    break
+            
+            # Wait for final result
+            final_state = await orchestration_task
+            
+            # Update active_campaigns with final results (same as background task)
+            active_campaigns[task_id] = final_state
+            
+            # Send final completion update (same format as regular API)
+            successful_negotiations = getattr(final_state, 'successful_negotiations', 0)
+            total_cost = getattr(final_state, 'total_cost', 0)
+            total_contracts = len(getattr(final_state, 'contracts', []))
+            
+            yield f"data: {json.dumps({
+                'message': '🎉 Campaign execution completed successfully!',
+                'status': 'completed',
+                'timestamp': datetime.now().isoformat(),
+                'progress': 100,
+                'data': {
+                    'task_id': task_id,
+                    'campaign_id': campaign_id,
+                    'creators_found': len(creators),
+                    'calls_initiated': len(creators),
+                    'successful_negotiations': successful_negotiations,
+                    'total_contracts': total_contracts,
+                    'total_cost': total_cost,
+                    'estimated_duration_minutes': len(creators) * 3,
+                    'monitor_url': f'/api/campaign-trigger/monitor/{task_id}',
+                    'creator_details': creator_details,
+                    'next_steps': [
+                        "AI agents completed calling each creator",
+                        "Negotiations were conducted by AI",
+                        "Results are available for sponsor review",
+                        f"Check full results at /api/campaign-trigger/monitor/{task_id}"
+                    ]
+                }
+            })}\n\n"
+            
+        except Exception as orchestration_error:
+            yield f"data: {json.dumps({
+                'message': f'❌ Orchestration error: {str(orchestration_error)}',
+                'status': 'orchestration_error',
+                'timestamp': datetime.now().isoformat(),
+                'progress': -1
+            })}\n\n"
+        
+    except Exception as e:
+        logger.error(f"❌ Streaming campaign execution failed: {str(e)}")
+        yield f"data: {json.dumps({
+            'message': f'❌ Campaign execution failed: {str(e)}',
+            'status': 'error',
+            'timestamp': datetime.now().isoformat(),
+            'progress': -1,
+            'data': {'error': str(e)}
+        })}\n\n"
+
 async def _execute_campaign_calls(
     task_id: str,
     campaign_data: CampaignData,
@@ -622,14 +946,32 @@ async def _execute_campaign_calls(
     try:
         logger.info(f"🎯 Starting campaign calls execution: {task_id}")
         
+        # Store initial state immediately for monitoring
+        from main import active_campaigns
+        from models.campaign import CampaignOrchestrationState
+        from datetime import datetime
+        
+        # Create initial state
+        initial_state = CampaignOrchestrationState(
+            campaign_id=campaign_data.id,
+            campaign_data=campaign_data,
+            current_stage="discovery",
+            started_at=datetime.now(),
+            estimated_completion_minutes=15
+        )
+        active_campaigns[task_id] = initial_state
+        logger.info(f"📊 Campaign state stored for monitoring: {task_id}")
+        
         # Use the enhanced orchestrator to handle the calls
+        from agents.enhanced_orchestrator import EnhancedCampaignOrchestrator
+        orchestrator = EnhancedCampaignOrchestrator()
+        
         final_state = await orchestrator.orchestrate_enhanced_campaign(
             campaign_data=campaign_data,
             task_id=task_id
         )
         
-        # Store results in global state for monitoring
-        from main import active_campaigns
+        # Update with final results
         active_campaigns[task_id] = final_state
         
         logger.info(f"✅ Campaign calls completed: {task_id}")
@@ -637,6 +979,12 @@ async def _execute_campaign_calls(
         
     except Exception as e:
         logger.error(f"❌ Campaign calls execution failed: {task_id} - {str(e)}")
+        # Still keep error state for monitoring
+        from main import active_campaigns
+        if task_id in active_campaigns:
+            state = active_campaigns[task_id]
+            state.error_message = str(e)
+            state.current_stage = "error"
 
 def _estimate_completion_time(state) -> str:
     """Estimate when the campaign will complete"""

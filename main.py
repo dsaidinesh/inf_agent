@@ -1,6 +1,7 @@
 # main.py - CORRECTED INTEGRATION
 import asyncio
 import logging
+from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -96,24 +97,84 @@ app.include_router(decision_router, prefix="/api/decision", tags=["Sponsor Decis
 from api.campaign_trigger import campaign_trigger_router
 app.include_router(campaign_trigger_router, prefix="/api/campaign-trigger", tags=["Campaign Triggers"])
 
+# Import and include streaming logs router
+from api.streaming_logs import app as streaming_app
+from fastapi.responses import StreamingResponse
+from api.streaming_logs import demo_agent_with_logging, enhanced_campaign_with_streaming
+from models.campaign import CampaignData
+
+# Add streaming endpoints directly to main app
+@app.get("/agent/stream")
+async def stream_agent_logs():
+    """
+    Endpoint that streams agent logs in real-time using Server-Sent Events (SSE).
+    
+    This is a demo endpoint - use /agent/campaign/stream for real campaigns
+    """
+    logger.info("Starting demo agent log stream")
+    
+    return StreamingResponse(
+        demo_agent_with_logging(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/plain; charset=utf-8"
+        }
+    )
+
+@app.post("/agent/campaign/stream")
+async def stream_enhanced_campaign_logs(campaign_data: CampaignData):
+    """
+    Endpoint that streams real enhanced campaign orchestration logs
+    """
+    logger.info(f"Starting enhanced campaign stream: {campaign_data.brand_name} - {campaign_data.product_name}")
+    
+    task_id = f"campaign_{int(datetime.now().timestamp())}"
+    
+    return StreamingResponse(
+        enhanced_campaign_with_streaming(campaign_data, task_id),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/plain; charset=utf-8"
+        }
+    )
+
 @app.get("/")
 async def root():
     """Root endpoint with platform status"""
     return {
         "service": "InfluencerFlow AI Platform",
-        "version": "2.0.0-fixed",
+        "version": "2.0.0-streaming",
         "status": "operational",
         "features": [
             "Fixed ElevenLabs integration",
             "Proper call state handling", 
             "Corrected contract generation",
-            "Enhanced error handling"
+            "Enhanced error handling",
+            "Real-time streaming logs",
+            "Live campaign monitoring"
         ],
+        "streaming_endpoints": {
+            "demo_stream": "/agent/stream",
+            "campaign_stream": "/agent/campaign/stream", 
+            "campaign_trigger_stream": "/api/campaign-trigger/trigger/{campaign_id}/stream",
+            "frontend_demo": "/frontend_example/streaming_logs_demo.html",
+            "campaign_trigger_demo": "/frontend_example/campaign_trigger_streaming_demo.html"
+        },
+        "curl_examples": {
+            "demo_stream": "curl http://localhost:8000/agent/stream",
+            "campaign_trigger_stream": "curl http://localhost:8000/api/campaign-trigger/trigger/your_campaign_id/stream",
+            "health_check": "curl http://localhost:8000/health"
+        },
         "fixes_applied": [
             "API response validation",
             "Conversation monitoring",
             "Contract generation logic",
-            "Error handling and retries"
+            "Error handling and retries",
+            "Real-time streaming integration"
         ]
     }
 
