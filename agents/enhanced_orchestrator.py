@@ -113,6 +113,19 @@ class EnhancedCampaignOrchestrator:
         
         state.discovered_influencers = discovered
         logger.info(f"🔍 Discovered {len(discovered)} influencers")
+        
+        # 📝 NEW: Log influencer discovery to outreach_logs table
+        if discovered:
+            try:
+                from services.outreach_logger import outreach_logger
+                await outreach_logger.log_influencer_discovery(
+                    campaign_id=state.campaign_id,
+                    discovered_influencers=discovered
+                )
+                logger.info(f"📝 Logged discovery of {len(discovered)} influencers to outreach_logs")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to log influencer discovery: {str(e)}")
+                # Don't fail the discovery phase if logging fails
     
     async def _run_strategy_phase(self, state: CampaignOrchestrationState):
         """🧠 Generate AI strategy - clean implementation"""
@@ -194,12 +207,65 @@ class EnhancedCampaignOrchestrator:
                     state.successful_negotiations += 1
                     state.total_cost += negotiation.final_rate
                     logger.info(f"✅ Successful negotiation: {creator.name} - ${negotiation.final_rate}")
+                    
+                    # 📝 Log successful outreach with ElevenLabs conversation ID
+                    try:
+                        # Only log if we have an actual ElevenLabs conversation ID
+                        if negotiation.conversation_id:
+                            from services.outreach_logger import outreach_logger
+                            await outreach_logger.log_outreach_attempt(
+                                campaign_id=state.campaign_id,
+                                creator_id=creator.id,
+                                conversation_id=negotiation.conversation_id,  # REQUIRED: actual ElevenLabs conversation ID
+                                channel="voice",
+                                message_type="negotiation_call",
+                                status="successful",
+                                additional_data={
+                                    "final_rate": negotiation.final_rate,
+                                    "call_duration_seconds": negotiation.call_duration_seconds,
+                                    "negotiated_terms": negotiation.negotiated_terms,
+                                    "call_summary": call_data.get("call_summary", ""),
+                                    "creator_name": creator.name,
+                                    "outcome": "accepted"
+                                }
+                            )
+                            logger.info(f"📝 Successfully logged negotiation call with ElevenLabs conversation ID: {negotiation.conversation_id}")
+                        else:
+                            logger.warning(f"⚠️ No conversation ID available for {creator.name} - skipping outreach logging")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to log successful negotiation: {str(e)}")
+                        
                 else:
                     negotiation.status = NegotiationStatus.FAILED
                     negotiation.failure_reason = call_data.get("failure_reason", "Negotiation failed")
                     negotiation.conversation_id = call_data.get("conversation_id")
                     state.failed_negotiations += 1
                     logger.info(f"❌ Failed negotiation: {creator.name}")
+                    
+                    # 📝 Log failed outreach with ElevenLabs conversation ID
+                    try:
+                        # Only log if we have an actual ElevenLabs conversation ID
+                        if negotiation.conversation_id:
+                            from services.outreach_logger import outreach_logger
+                            await outreach_logger.log_outreach_attempt(
+                                campaign_id=state.campaign_id,
+                                creator_id=creator.id,
+                                conversation_id=negotiation.conversation_id,  # REQUIRED: actual ElevenLabs conversation ID
+                                channel="voice",
+                                message_type="negotiation_call",
+                                status="failed",
+                                additional_data={
+                                    "failure_reason": negotiation.failure_reason,
+                                    "call_duration_seconds": call_data.get("duration_seconds", 0),
+                                    "creator_name": creator.name,
+                                    "outcome": "declined"
+                                }
+                            )
+                            logger.info(f"📝 Successfully logged failed negotiation call with ElevenLabs conversation ID: {negotiation.conversation_id}")
+                        else:
+                            logger.warning(f"⚠️ No conversation ID available for failed call to {creator.name} - skipping outreach logging")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to log failed negotiation: {str(e)}")
                 
                 negotiation.completed_at = datetime.now()
                 state.negotiations.append(negotiation)

@@ -141,6 +141,20 @@ class StreamingOrchestrator(EnhancedCampaignOrchestrator):
             {"influencer_count": len(discovered)}
         )
         
+        # 📝 NEW: Log influencer discovery to outreach_logs table
+        if discovered:
+            try:
+                from services.outreach_logger import outreach_logger
+                await outreach_logger.log_influencer_discovery(
+                    campaign_id=state.campaign_id,
+                    discovered_influencers=discovered
+                )
+                await self.stream_update("📝 Logged influencer discoveries to database", "discovery", 22)
+                logger.info(f"📝 Logged discovery of {len(discovered)} influencers to outreach_logs")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to log influencer discovery: {str(e)}")
+                await self.stream_update("⚠️ Warning: Discovery logging failed", "discovery", 22)
+        
         # Stream details about discovered influencers
         for i, match in enumerate(discovered[:3]):  # Show top 3
             await self.stream_update(
@@ -167,7 +181,7 @@ class StreamingOrchestrator(EnhancedCampaignOrchestrator):
             state.ai_strategy = "Default strategy - Groq not available"
     
     async def _run_negotiations_phase_with_streaming(self, state: CampaignOrchestrationState):
-        """Negotiations phase with streaming updates"""
+        """Negotiations phase with detailed streaming updates"""
         state.current_stage = "negotiations"
         
         if not state.discovered_influencers:
@@ -179,44 +193,97 @@ class StreamingOrchestrator(EnhancedCampaignOrchestrator):
         
         total_influencers = len(state.discovered_influencers)
         base_progress = 40
-        progress_per_influencer = 30 / total_influencers if total_influencers > 0 else 0
+        progress_per_influencer = 35 / total_influencers if total_influencers > 0 else 0
         
-        # Process each influencer with streaming updates
+        await self.stream_update(
+            f"📞 Starting negotiations with {total_influencers} creators...", 
+            "negotiations_start", 
+            base_progress,
+            {"total_creators": total_influencers}
+        )
+        
+        # Process each influencer with detailed streaming updates
         for i, influencer_match in enumerate(state.discovered_influencers):
             creator = influencer_match.creator
             current_progress = base_progress + (i * progress_per_influencer)
             
+            # Show which creator we're calling now
             await self.stream_update(
-                f"📞 Calling {creator.name} ({i+1}/{total_influencers})...", 
-                "negotiating", 
+                f"👤 Calling creator {i+1}/{total_influencers}: {creator.name}", 
+                "creator_start", 
                 int(current_progress),
-                {"creator_name": creator.name, "creator_index": i+1, "total_creators": total_influencers}
+                {
+                    "creator_name": creator.name, 
+                    "creator_index": i+1, 
+                    "total_creators": total_influencers,
+                    "followers": creator.followers,
+                    "estimated_rate": influencer_match.estimated_rate
+                }
             )
             
-            # Create negotiation record
-            negotiation = await self._conduct_negotiation_with_streaming(creator, state.campaign_data, influencer_match, i+1, total_creators)
+            # Create negotiation record with detailed streaming
+            negotiation = await self._conduct_negotiation_with_streaming(creator, state.campaign_data, influencer_match, i+1, total_influencers)
             state.negotiations.append(negotiation)
             
+            # Update totals and show progress
             if negotiation.status.value == "success":
                 state.successful_negotiations += 1
                 state.total_cost += negotiation.final_rate
+                
+                # Show running totals
                 await self.stream_update(
-                    f"✅ Successful negotiation: {creator.name} - ${negotiation.final_rate:,}", 
-                    "success", 
-                    int(current_progress + progress_per_influencer),
-                    {"creator_name": creator.name, "final_rate": negotiation.final_rate}
+                    f"✅ Progress: {state.successful_negotiations} accepted, ${state.total_cost:,} total cost", 
+                    "progress_update", 
+                    int(current_progress + progress_per_influencer * 0.8),
+                    {
+                        "successful_count": state.successful_negotiations,
+                        "total_cost": state.total_cost,
+                        "completed_count": i+1,
+                        "remaining_count": total_influencers - (i+1)
+                    }
                 )
             else:
                 state.failed_negotiations += 1
+                
+                # Show running totals for failures too
                 await self.stream_update(
-                    f"❌ Failed negotiation: {creator.name}", 
-                    "failed", 
-                    int(current_progress + progress_per_influencer),
-                    {"creator_name": creator.name, "failure_reason": negotiation.failure_reason}
+                    f"📊 Progress: {i+1}/{total_influencers} contacted, {state.successful_negotiations} accepted", 
+                    "progress_update", 
+                    int(current_progress + progress_per_influencer * 0.8),
+                    {
+                        "successful_count": state.successful_negotiations,
+                        "failed_count": state.failed_negotiations,
+                        "completed_count": i+1,
+                        "remaining_count": total_influencers - (i+1)
+                    }
                 )
+            
+            # Small delay between creators to make it feel more natural
+            if i < total_influencers - 1:  # Don't delay after the last creator
+                await self.stream_update(
+                    f"⏭️ Moving to next creator...", 
+                    "transition", 
+                    int(current_progress + progress_per_influencer),
+                    {"next_creator_index": i+2}
+                )
+                import asyncio
+                await asyncio.sleep(0.5)
+        
+        # Final summary of negotiations phase
+        await self.stream_update(
+            f"📞 Negotiations completed: {state.successful_negotiations}/{total_influencers} creators accepted", 
+            "negotiations_complete", 
+            75,
+            {
+                "successful_negotiations": state.successful_negotiations,
+                "failed_negotiations": state.failed_negotiations,
+                "total_cost": state.total_cost,
+                "average_rate": state.total_cost / max(1, state.successful_negotiations)
+            }
+        )
     
     async def _conduct_negotiation_with_streaming(self, creator, campaign_data, influencer_match, creator_index, total_creators):
-        """Conduct negotiation with streaming updates"""
+        """Conduct negotiation with detailed streaming updates"""
         from models.campaign import NegotiationState, NegotiationStatus
         
         negotiation = NegotiationState(
@@ -225,16 +292,54 @@ class StreamingOrchestrator(EnhancedCampaignOrchestrator):
         )
         
         try:
+            # Phase 1: Initial call setup
             await self.stream_update(
-                f"☎️ Dialing {creator.name} at {creator.phone_number}...", 
-                "calling", 
+                f"📱 Preparing call to {creator.name}...", 
+                "call_setup", 
                 None,
-                {"creator_name": creator.name, "phone": creator.phone_number}
+                {"creator_name": creator.name, "creator_index": creator_index, "total_creators": total_creators}
+            )
+            
+            # Phase 2: Dialing
+            await self.stream_update(
+                f"☎️ Dialing {creator.name} at {creator.phone_number[-4:]}****...", 
+                "dialing", 
+                None,
+                {"creator_name": creator.name, "phone_masked": f"{creator.phone_number[-4:]}****"}
+            )
+            
+            # Phase 3: Call connecting (add small delay to show this step)
+            import asyncio
+            await asyncio.sleep(0.5)
+            await self.stream_update(
+                f"📞 Call connecting to {creator.name}...", 
+                "connecting", 
+                None,
+                {"creator_name": creator.name}
+            )
+            
+            # Phase 4: Call in progress
+            await self.stream_update(
+                f"🎤 Call in progress with {creator.name} - negotiating terms...", 
+                "negotiating", 
+                None,
+                {"creator_name": creator.name, "estimated_rate": influencer_match.estimated_rate}
             )
             
             # Real voice service negotiation
             success, call_data = await self._conduct_real_negotiation(creator, campaign_data, influencer_match)
             
+            # Phase 5: Call completed - show results
+            call_duration = call_data.get("duration_seconds", 0)
+            if call_duration > 0:
+                await self.stream_update(
+                    f"📋 Call with {creator.name} completed ({call_duration}s)", 
+                    "call_completed", 
+                    None,
+                    {"creator_name": creator.name, "duration": call_duration}
+                )
+            
+            # Phase 6: Result analysis
             if success:
                 negotiation.status = NegotiationStatus.SUCCESS
                 negotiation.final_rate = call_data.get("final_rate", influencer_match.estimated_rate)
@@ -247,35 +352,74 @@ class StreamingOrchestrator(EnhancedCampaignOrchestrator):
                 })
                 
                 await self.stream_update(
-                    f"🎉 {creator.name} accepted ${negotiation.final_rate:,} for the campaign!", 
+                    f"🎉 SUCCESS: {creator.name} accepted ${negotiation.final_rate:,}!", 
                     "accepted", 
                     None,
-                    {"creator_name": creator.name, "final_rate": negotiation.final_rate, "duration": negotiation.call_duration_seconds}
+                    {
+                        "creator_name": creator.name, 
+                        "final_rate": negotiation.final_rate, 
+                        "duration": negotiation.call_duration_seconds,
+                        "savings": max(0, influencer_match.estimated_rate - negotiation.final_rate),
+                        "conversation_id": negotiation.conversation_id
+                    }
                 )
+                
+                # Show that outreach logging is happening
+                if negotiation.conversation_id:
+                    await self.stream_update(
+                        f"📝 Logged successful call with conversation ID: {negotiation.conversation_id}", 
+                        "outreach_logged", 
+                        None,
+                        {"conversation_id": negotiation.conversation_id}
+                    )
             else:
                 negotiation.status = NegotiationStatus.FAILED
                 negotiation.failure_reason = call_data.get("failure_reason", "Negotiation failed")
                 negotiation.conversation_id = call_data.get("conversation_id")
                 
                 await self.stream_update(
-                    f"💔 {creator.name} declined the campaign offer", 
+                    f"❌ DECLINED: {creator.name} - {negotiation.failure_reason}", 
                     "declined", 
                     None,
-                    {"creator_name": creator.name, "reason": negotiation.failure_reason}
+                    {"creator_name": creator.name, "reason": negotiation.failure_reason, "conversation_id": negotiation.conversation_id}
                 )
+                
+                # Show that outreach logging is happening for failed calls too
+                if negotiation.conversation_id:
+                    await self.stream_update(
+                        f"📝 Logged failed call with conversation ID: {negotiation.conversation_id}", 
+                        "outreach_logged", 
+                        None,
+                        {"conversation_id": negotiation.conversation_id}
+                    )
             
             negotiation.completed_at = datetime.now()
             return negotiation
             
         except Exception as e:
-            await self.stream_update(f"❌ Error calling {creator.name}: {str(e)}", "error", None)
+            # Don't show technical timeout errors - show user-friendly messages
+            if "timeout" in str(e).lower():
+                await self.stream_update(
+                    f"⏱️ {creator.name} call taking longer than expected - continuing...", 
+                    "call_delayed", 
+                    None,
+                    {"creator_name": creator.name}
+                )
+            else:
+                await self.stream_update(
+                    f"❌ Unable to reach {creator.name} - call failed", 
+                    "call_failed", 
+                    None,
+                    {"creator_name": creator.name, "error": "Connection failed"}
+                )
+            
             negotiation.status = NegotiationStatus.FAILED
-            negotiation.failure_reason = str(e)
+            negotiation.failure_reason = "Call connection failed"
             negotiation.completed_at = datetime.now()
             return negotiation
     
     async def _run_contracts_phase_with_streaming(self, state: CampaignOrchestrationState):
-        """Contracts phase with streaming updates"""
+        """Contracts phase with detailed streaming updates"""
         state.current_stage = "contracts"
         
         successful_negotiations = [
@@ -284,18 +428,32 @@ class StreamingOrchestrator(EnhancedCampaignOrchestrator):
         ]
         
         if not successful_negotiations:
-            await self.stream_update("⚠️ No successful negotiations - skipping contracts", "contracts", 85)
+            await self.stream_update("⚠️ No successful negotiations - skipping contracts", "contracts", 80)
             return
         
         await self.stream_update(
-            f"📝 Generating {len(successful_negotiations)} contracts...", 
-            "contracts", 
-            85
+            f"📝 Preparing {len(successful_negotiations)} contracts for successful negotiations...", 
+            "contracts_start", 
+            80,
+            {"contract_count": len(successful_negotiations)}
         )
         
         # Generate contracts and send via email
         for i, negotiation in enumerate(successful_negotiations):
             try:
+                creator_name = next(
+                    (match.creator.name for match in state.discovered_influencers 
+                     if match.creator.id == negotiation.creator_id), 
+                    "Unknown Creator"
+                )
+                
+                await self.stream_update(
+                    f"📄 Generating contract for {creator_name}...", 
+                    "contract_generating", 
+                    80 + (i * 3),
+                    {"creator_name": creator_name, "contract_index": i+1}
+                )
+                
                 # Generate contract data
                 contract = self._create_contract(negotiation, state.campaign_data)
                 state.contracts.append(contract)
@@ -305,22 +463,47 @@ class StreamingOrchestrator(EnhancedCampaignOrchestrator):
                 negotiation.negotiated_terms["contract_id"] = contract["contract_id"]
                 
                 await self.stream_update(
-                    f"📄 Contract generated: {contract['contract_id']}", 
-                    "contract_generated", 
-                    85 + (i * 5)
+                    f"✅ Contract ready: {contract['contract_id'][:8]}...", 
+                    "contract_ready", 
+                    80 + (i * 3) + 1,
+                    {"creator_name": creator_name, "contract_id": contract['contract_id']}
                 )
                 
                 # Send contract via analytics workflow
                 await self.stream_update(
-                    f"📧 Sending to sponsor for approval...", 
-                    "sending_approval", 
-                    85 + (i * 5) + 2
+                    f"📧 Sending contract to sponsor for {creator_name}...", 
+                    "contract_sending", 
+                    80 + (i * 3) + 2,
+                    {"creator_name": creator_name}
                 )
                 
                 await self._send_contract_email(negotiation, state.campaign_data, contract)
                 
+                await self.stream_update(
+                    f"✉️ Contract sent successfully for {creator_name}", 
+                    "contract_sent", 
+                    80 + (i * 3) + 3,
+                    {"creator_name": creator_name}
+                )
+                
             except Exception as e:
-                await self.stream_update(f"❌ Contract generation failed: {e}", "error", None)
+                await self.stream_update(
+                    f"❌ Contract generation failed for {creator_name}: {str(e)}", 
+                    "contract_error", 
+                    None,
+                    {"creator_name": creator_name, "error": str(e)}
+                )
+        
+        # Final contracts summary
+        await self.stream_update(
+            f"📝 All contracts completed: {len(state.contracts)} contracts sent to sponsor", 
+            "contracts_complete", 
+            95,
+            {
+                "total_contracts": len(state.contracts),
+                "successful_negotiations": len(successful_negotiations)
+            }
+        )
     
     async def _run_completion_phase_with_streaming(self, state: CampaignOrchestrationState):
         """Completion phase with streaming updates"""

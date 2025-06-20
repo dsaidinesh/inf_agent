@@ -280,6 +280,18 @@ class InfluencerDiscoveryAgent:
             for i, match in enumerate(top_matches[:3]):
                 logger.info(f"  {i+1}. {match.creator.name} - {match.similarity_score:.3f} score")
             
+            # 📝 NEW: Log the discovery if we have a valid campaign ID
+            if top_matches and hasattr(campaign_data, 'id') and campaign_data.id != "discovery_temp":
+                try:
+                    from services.outreach_logger import outreach_logger
+                    await outreach_logger.log_influencer_discovery(
+                        campaign_id=campaign_data.id,
+                        discovered_influencers=top_matches
+                    )
+                    logger.info(f"📝 Logged discovery of {len(top_matches)} influencers to outreach_logs")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to log influencer discovery in find_matches: {str(e)}")
+            
             return top_matches
             
         except Exception as e:

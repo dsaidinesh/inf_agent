@@ -384,8 +384,26 @@ async def generate_contract_from_call(request: Dict[str, Any]):
         
         # Get contract details
         creator_name = dynamic_vars.get("influencerName", "Creator")
-        brand_name = dynamic_vars.get("brandName", "Brand")
-        product_name = dynamic_vars.get("productName", "Product")
+        
+        # Extract brand and product names from the new campaignBrief format
+        campaign_brief = dynamic_vars.get("campaignBrief", "")
+        brand_name = "Brand"
+        product_name = "Product"
+        
+        # Parse brand and product from campaign brief if available
+        if campaign_brief:
+            for line in campaign_brief.split('\n'):
+                if line.startswith("Brand:"):
+                    brand_name = line.replace("Brand:", "").strip()
+                elif line.startswith("Product:"):
+                    product_name = line.replace("Product:", "").strip()
+        
+        # Fallback: try to get from InfluencerProfile if campaign brief parsing fails
+        if brand_name == "Brand" or product_name == "Product":
+            # These would be in separate campaign data, not in InfluencerProfile
+            # For now, use defaults - this could be enhanced to pass campaign data separately
+            brand_name = brand_name if brand_name != "Brand" else "Brand Partner"
+            product_name = product_name if product_name != "Product" else "Product Collaboration"
         
         final_rate = data_collection.get("final_rate_mentioned", {}).get("value")
         timeline = data_collection.get("timeline_mentioned", {}).get("value", "4 weeks")

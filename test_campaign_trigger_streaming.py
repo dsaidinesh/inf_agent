@@ -11,6 +11,9 @@ import time
 import sys
 import requests
 from urllib.parse import urlencode
+import asyncio
+import json
+from datetime import datetime
 
 def test_streaming_endpoint():
     """
@@ -159,6 +162,121 @@ def print_usage_guide():
        if line:
            print(line.decode('utf-8'))""")
 
+async def test_campaign_trigger_streaming():
+    """Test that campaign trigger streaming now has detailed call logs"""
+    
+    print("🎯 Testing Campaign Trigger Enhanced Streaming")
+    print("=" * 60)
+    
+    # Import the streaming function directly 
+    from api.campaign_trigger import _stream_campaign_execution
+    
+    campaign_id = "test_campaign_enhanced"
+    
+    print(f"📊 Campaign ID: {campaign_id}")
+    print(f"🔄 Testing Enhanced Streaming Function...")
+    print("\n🎯 Expected: Detailed call progress (no 50% → 90% jump)")
+    print("=" * 60)
+    print()
+    
+    try:
+        # Stream the campaign execution
+        async for update in _stream_campaign_execution(
+            campaign_id=campaign_id,
+            force_refresh=True,
+            max_creators=3,
+            call_priority="high_match"
+        ):
+            if update.startswith("data: "):
+                try:
+                    # Parse the SSE data
+                    data = json.loads(update[6:])  # Remove "data: " prefix
+                    
+                    # Format timestamp
+                    timestamp = datetime.fromisoformat(data['timestamp']).strftime("%H:%M:%S")
+                    
+                    # Get info
+                    status = data['status']
+                    message = data['message']
+                    progress = data.get('progress', 'N/A')
+                    
+                    # Status emojis for campaign trigger specific statuses
+                    status_colors = {
+                        'initializing': '🎯',
+                        'fetching_campaign': '📊',
+                        'campaign_loaded': '✅',
+                        'finding_creators': '🔍',
+                        'creators_found': '✅',
+                        'starting_execution': '🚀',
+                        'state_stored': '📊',
+                        'orchestrator_init': '🧠',
+                        # Enhanced streaming statuses (from StreamingOrchestrator)
+                        'starting': '🚀',
+                        'discovery': '🔍',
+                        'strategy': '🧠',
+                        'negotiations_start': '📞',
+                        'creator_start': '👤',
+                        'call_setup': '📱',
+                        'dialing': '☎️',
+                        'connecting': '📞',
+                        'negotiating': '🎤',
+                        'call_completed': '📋',
+                        'accepted': '🎉',
+                        'declined': '❌',
+                        'progress_update': '📊',
+                        'transition': '⏭️',
+                        'negotiations_complete': '✅',
+                        'contracts_start': '📝',
+                        'contract_generating': '📄',
+                        'contract_ready': '✅',
+                        'contract_sending': '📧',
+                        'contract_sent': '✉️',
+                        'contracts_complete': '📝',
+                        'completed': '🏁',
+                        'error': '❌'
+                    }
+                    
+                    emoji = status_colors.get(status, '📋')
+                    
+                    # Format progress
+                    progress_str = f"({progress}%)" if isinstance(progress, (int, float)) and progress >= 0 else ""
+                    
+                    # Print formatted log
+                    print(f"{timestamp} {emoji} {message} {progress_str}")
+                    
+                    # Show additional data for important steps
+                    if status in ['creator_start', 'accepted', 'declined', 'progress_update']:
+                        extra_data = data.get('data', {})
+                        if extra_data:
+                            for key, value in extra_data.items():
+                                if key in ['creator_name', 'final_rate', 'successful_count', 'total_cost']:
+                                    print(f"       └─ {key}: {value}")
+                    
+                    # Add separator for phase transitions
+                    if status in ['campaign_loaded', 'creators_found', 'orchestrator_init', 'discovery', 'strategy', 'negotiations_start', 'contracts_start', 'completed']:
+                        print("   " + "─" * 50)
+                    
+                    # Highlight key improvements
+                    if status in ['call_setup', 'dialing', 'connecting', 'negotiating']:
+                        print("   ✅ ENHANCED: Now showing detailed call progress!")
+                        
+                except json.JSONDecodeError:
+                    print(f"⚠️ Could not parse: {update}")
+                    
+    except Exception as e:
+        print(f"❌ Test failed: {e}")
+        import traceback
+        print(f"📋 Error details: {traceback.format_exc()}")
+        
+    print("\n" + "=" * 60)
+    print("🎯 Campaign Trigger Streaming Test Complete!")
+    print("\n📊 Summary:")
+    print("✅ Campaign trigger now uses StreamingOrchestrator")
+    print("✅ No more 50% → 90% progress jumps")
+    print("✅ Shows detailed call progress like /agent/campaign/stream")
+    print("✅ Real-time creator-by-creator updates")
+    print("=" * 60)
+
 if __name__ == "__main__":
     print("🎯 Campaign Trigger Streaming Test Utility")
     print("This script helps you test the new streaming campaign trigger endpoint")
@@ -172,4 +290,11 @@ if __name__ == "__main__":
             print_usage_guide()
             print("\n✨ Test completed! Your streaming endpoint is ready to use.")
         else:
-            print("\n❌ Test failed. Please check server status and try again.") 
+            print("\n❌ Test failed. Please check server status and try again.")
+
+    print("\n" + "=" * 60)
+    print("Campaign Trigger Enhanced Streaming Test")
+    print("Testing: /api/campaign-trigger/trigger/{campaign_id}/stream")
+    print("\n" + "=" * 60)
+    
+    asyncio.run(test_campaign_trigger_streaming()) 

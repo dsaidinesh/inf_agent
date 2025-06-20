@@ -797,98 +797,55 @@ async def _stream_campaign_execution(
             'data': {'monitor_url': f'/api/campaign-trigger/monitor/{task_id}'}
         })}\n\n"
         
-        # Use the enhanced orchestrator (same as _execute_campaign_calls)
-        from agents.enhanced_orchestrator import EnhancedCampaignOrchestrator
-        orchestrator = EnhancedCampaignOrchestrator()
+        # Use the enhanced orchestrator with streaming (UPDATED - same as api/streaming_logs.py)
+        from api.streaming_logs import StreamingOrchestrator
         
         try:
             yield f"data: {json.dumps({
-                'message': '🧠 Initializing enhanced orchestrator...',
+                'message': '🧠 Initializing enhanced orchestrator with streaming...',
                 'status': 'orchestrator_init',
                 'timestamp': datetime.now().isoformat(),
                 'progress': 50
             })}\n\n"
             
-            # Start orchestration task (same as background task)
+            # Create streaming orchestrator with callback for real-time updates
+            updates_queue = asyncio.Queue()
+            
+            async def stream_callback(message: str):
+                """Callback to send updates directly to the client"""
+                await updates_queue.put(message)
+            
+            streaming_orchestrator = StreamingOrchestrator(stream_callback=stream_callback)
+            
+            # Start the campaign in a background task
             orchestration_task = asyncio.create_task(
-                orchestrator.orchestrate_enhanced_campaign(
-                    campaign_data=campaign_data,
-                    task_id=task_id
-                )
+                streaming_orchestrator.orchestrate_enhanced_campaign_with_streaming(campaign_data, task_id)
             )
             
-            # Monitor progress by checking the active_campaigns state
-            last_stage = "discovery"
-            stage_progress = {
-                "discovery": 55,
-                "strategy": 65, 
-                "negotiations": 75,
-                "contracts": 85,
-                "completion": 95,
-                "completed": 100,
-                "failed": -1
-            }
-            
+            # Stream updates as they come from the orchestrator
             while not orchestration_task.done():
-                await asyncio.sleep(2)  # Check every 2 seconds
-                
-                # Get current state from active_campaigns
-                current_state = active_campaigns.get(task_id)
-                if current_state:
-                    current_stage = getattr(current_state, 'current_stage', 'unknown')
-                    
-                    # Update when stage changes
-                    if current_stage != last_stage:
-                        progress = stage_progress.get(current_stage, 50)
-                        
-                        stage_messages = {
-                            "discovery": "🔍 Discovering influencers...",
-                            "strategy": "🧠 Generating AI strategy...", 
-                            "negotiations": "📞 Conducting negotiations...",
-                            "contracts": "📝 Generating contracts...",
-                            "completion": "🏁 Finalizing campaign...",
-                            "completed": "✅ Campaign completed!",
-                            "failed": "❌ Campaign failed"
-                        }
-                        
-                        message = stage_messages.get(current_stage, f"Processing stage: {current_stage}")
-                        
-                        yield f"data: {json.dumps({
-                            'message': message,
-                            'status': current_stage,
-                            'timestamp': datetime.now().isoformat(),
-                            'progress': progress,
-                            'data': {
-                                'stage': current_stage,
-                                'successful_negotiations': getattr(current_state, 'successful_negotiations', 0),
-                                'total_cost': getattr(current_state, 'total_cost', 0)
-                            }
-                        })}\n\n"
-                        
-                        last_stage = current_stage
-                        
-                        # Exit if completed or failed
-                        if current_stage in ['completed', 'failed']:
-                            break
-                
-                # Timeout after 5 minutes
-                elapsed = datetime.now() - initial_state.started_at
-                if elapsed.total_seconds() > 300:
-                    yield f"data: {json.dumps({
-                        'message': '⏰ Operation timeout - taking longer than expected',
-                        'status': 'timeout_warning',
-                        'timestamp': datetime.now().isoformat(),
-                        'progress': 90
-                    })}\n\n"
-                    break
+                try:
+                    # Wait for either an update or task completion (with short timeout)
+                    update = await asyncio.wait_for(updates_queue.get(), timeout=0.1)
+                    yield update  # This is already formatted as "data: {json}\n\n"
+                except asyncio.TimeoutError:
+                    # Check if task is still running
+                    if orchestration_task.done():
+                        break
+                    continue
+            
+            # Get any remaining updates
+            while not updates_queue.empty():
+                update = updates_queue.get_nowait()
+                yield update
             
             # Wait for final result
             final_state = await orchestration_task
             
-            # Update active_campaigns with final results (same as background task)
+            # Update active_campaigns with final results
             active_campaigns[task_id] = final_state
             
-            # Send final completion update (same format as regular API)
+            # Send final completion update
             successful_negotiations = getattr(final_state, 'successful_negotiations', 0)
             total_cost = getattr(final_state, 'total_cost', 0)
             total_contracts = len(getattr(final_state, 'contracts', []))

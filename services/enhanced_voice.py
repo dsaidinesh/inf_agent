@@ -80,24 +80,14 @@ class EnhancedVoiceService:
         🔧 PREPARE DYNAMIC VARIABLES FOR ELEVENLABS
         
         This method prepares all the context data for ElevenLabs agents
+        Now uses the new format with InfluencerProfile as JSON object
         """
         
         if pricing_strategy is None:
             pricing_strategy = {"initial_offer": 1000, "max_offer": 1500}
         
-        return {
-            "influencerName": creator_profile.get("name", "Test Creator"),
-            "influencerNiche": creator_profile.get("niche", "lifestyle"),
-            "followerCount": creator_profile.get("followers", 10000),
-            "engagementRate": creator_profile.get("engagement_rate", 0.03),
-            "campaignBrief": campaign_data.get("product_description", "Test product"),
-            "brandName": campaign_data.get("brand_name", "Test Brand"),
-            "productName": campaign_data.get("product_name", "Test Product"),
-            "targetAudience": campaign_data.get("target_audience", "General audience"),
-            "initialOffer": pricing_strategy.get("initial_offer", 1000),
-            "maxBudget": pricing_strategy.get("max_offer", 1500),
-            "negotiationStyle": "collaborative"
-        }
+        # Use the same format as _generate_dynamic_variables for consistency
+        return self._generate_dynamic_variables(creator_profile, campaign_data, pricing_strategy)
     
     async def initiate_negotiation_call(
         self,
@@ -464,21 +454,190 @@ class EnhancedVoiceService:
         campaign_data: Dict[str, Any],
         pricing_strategy: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Generate dynamic variables for ElevenLabs agent"""
+        """
+        🎯 GENERATE DYNAMIC VARIABLES FOR ELEVENLABS AGENT
         
-        return {
-            "influencerName": creator_profile.get("name", "Creator"),
-            "influencerNiche": creator_profile.get("niche", "lifestyle"),
-            "followerCount": creator_profile.get("followers", 0),
-            "engagementRate": creator_profile.get("engagement_rate", 0.0),
-            "campaignBrief": campaign_data.get("product_description", ""),
-            "brandName": campaign_data.get("brand_name", ""),
-            "productName": campaign_data.get("product_name", ""),
-            "targetAudience": campaign_data.get("target_audience", ""),
-            "initialOffer": pricing_strategy.get("initial_offer", 1000),
-            "maxBudget": pricing_strategy.get("max_offer", 2000),
-            "negotiationStyle": pricing_strategy.get("style", "collaborative")
+        New format with 4 key variables:
+        1. InfluencerProfile - JSON object with all influencer details
+        2. campaignBrief - Campaign description and details 
+        3. PriceRange - Budget and pricing information
+        4. influencerName - Simple name reference
+        """
+        
+        # 1. InfluencerProfile - JSON object with ALL comprehensive influencer data
+        influencer_profile_data = {
+            # Basic Information
+            "name": creator_profile.get("name", "Creator"),
+            "channel": creator_profile.get("id", creator_profile.get("channel", "unknown_channel")),
+            "email": creator_profile.get("email", ""),
+            "phone_number": creator_profile.get("phone_number", ""),
+            
+            # Platform & Content Details
+            "platform": creator_profile.get("platform", "Social Media"),
+            "niche": creator_profile.get("niche", "General").title(),
+            "about": creator_profile.get("about") or f"Content creator specializing in {creator_profile.get('niche', 'lifestyle')} content",
+            "specialties": creator_profile.get("specialties", []),
+            "preferred_collaboration_style": creator_profile.get("preferred_collaboration_style", "Professional and collaborative"),
+            
+            # Audience & Performance Metrics
+            "followers": f"{creator_profile.get('followers', 0)//1000}K" if creator_profile.get('followers', 0) >= 1000 else str(creator_profile.get('followers', 0)),
+            "followers_numeric": creator_profile.get("followers", 0),
+            "audienceType": creator_profile.get("audience_type") or f"{creator_profile.get('niche', 'General').title()} Enthusiasts",
+            "engagement": f"{creator_profile.get('engagement_rate', 0.0)}%",
+            "engagement_rate_numeric": creator_profile.get("engagement_rate", 0.0),
+            "avgViews": f"{creator_profile.get('average_views', 0)//1000}K" if creator_profile.get('average_views', 0) >= 1000 else str(creator_profile.get('average_views', 0)),
+            "average_views_numeric": creator_profile.get("average_views", 0),
+            
+            # Demographics & Audience Insights
+            "audience_demographics": creator_profile.get("audience_demographics", {}),
+            "performance_metrics": creator_profile.get("performance_metrics", {}),
+            
+            # Location & Languages
+            "location": creator_profile.get("location", "Unknown"),
+            "languages": creator_profile.get("languages", ["English"]),
+            
+            # Business & Collaboration Details
+            "collaboration_rate": creator_profile.get("typical_rate", pricing_strategy.get("initial_offer", 1000)),
+            "rate_history": creator_profile.get("rate_history", {}),
+            "availability": creator_profile.get("availability", "good"),
+            "last_campaign_date": creator_profile.get("last_campaign_date", ""),
+            "recent_campaigns": creator_profile.get("recent_campaigns", []),
+            
+            # Creator Tier & Estimated Metrics
+            "creator_tier": self._determine_creator_tier(creator_profile.get("followers", 0)),
+            "estimated_cpm": self._calculate_estimated_cpm(creator_profile.get("typical_rate", 1000), creator_profile.get("average_views", 1000))
         }
+        
+        # 2. campaignBrief - Comprehensive campaign information
+        campaign_brief = f"""
+Brand: {campaign_data.get('brand_name', 'Brand')}
+Product: {campaign_data.get('product_name', 'Product')}
+Description: {campaign_data.get('product_description', 'Product description')}
+Target Audience: {campaign_data.get('target_audience', 'General audience')}
+Campaign Goal: {campaign_data.get('campaign_goal', 'Brand awareness')}
+Niche: {campaign_data.get('product_niche', 'general')}
+Content Type: Video review, social media posts
+Timeline: 7-14 days
+Usage Rights: Organic posts with 6-month brand rights
+        """.strip()
+        
+        # 3. PriceRange - Budget and pricing strategy
+        initial_offer = pricing_strategy.get("initial_offer", 1000)
+        max_budget = pricing_strategy.get("max_offer", initial_offer * 1.5)
+        budget_range = f"Initial Offer: ${initial_offer:,.0f} | Max Budget: ${max_budget:,.0f} | Negotiable based on deliverables and timeline"
+        
+        # 4. influencerName - Simple name for easy reference
+        influencer_name = creator_profile.get("name", "Creator")
+        
+        # Convert InfluencerProfile to formatted string (Eleven Labs expects string format)
+        influencer_profile_string = self._format_influencer_profile_as_string(influencer_profile_data)
+        
+        # Return the new dynamic variables format
+        dynamic_variables = {
+            "InfluencerProfile": influencer_profile_string,  # Formatted string with ALL data
+            "campaignBrief": campaign_brief,                 # Campaign details string
+            "PriceRange": budget_range,                      # Budget information string  
+            "influencerName": influencer_name                # Simple name string
+        }
+        
+        logger.info(f"🎯 Generated dynamic variables for {influencer_name}")
+        logger.debug(f"   InfluencerProfile: {influencer_profile_data}")
+        logger.debug(f"   PriceRange: {budget_range}")
+        
+        return dynamic_variables
+    
+    def _determine_creator_tier(self, followers: int) -> str:
+        """Determine creator tier based on follower count"""
+        if followers < 100_000:
+            return "micro_influencer"
+        elif followers < 1_000_000:
+            return "macro_influencer"
+        else:
+            return "mega_influencer"
+    
+    def _calculate_estimated_cpm(self, typical_rate: float, average_views: int) -> float:
+        """Calculate estimated cost per thousand views"""
+        if average_views > 0:
+            return round((typical_rate / average_views) * 1000, 2)
+        return 0.0
+    
+    def _format_influencer_profile_as_string(self, profile_data: Dict[str, Any]) -> str:
+        """
+        Format comprehensive influencer profile data as a structured string
+        that includes ALL available details for Eleven Labs agent
+        """
+        
+        # Helper function to format lists
+        def format_list(items):
+            if isinstance(items, list):
+                return ", ".join(str(item) for item in items)
+            return str(items)
+        
+        # Helper function to format nested objects
+        def format_object(obj):
+            if isinstance(obj, dict):
+                return "; ".join(f"{k}: {v}" for k, v in obj.items())
+            return str(obj)
+        
+        # Build comprehensive formatted string with ALL data
+        formatted_parts = []
+        
+        # Basic Information
+        formatted_parts.append(f"name: {profile_data.get('name', 'N/A')}")
+        formatted_parts.append(f"channel: {profile_data.get('channel', 'N/A')}")
+        formatted_parts.append(f"email: {profile_data.get('email', 'N/A')}")
+        formatted_parts.append(f"phone: {profile_data.get('phone_number', 'N/A')}")
+        
+        # Platform & Content Details
+        formatted_parts.append(f"platform: {profile_data.get('platform', 'N/A')}")
+        formatted_parts.append(f"niche: {profile_data.get('niche', 'N/A')}")
+        formatted_parts.append(f"about: {profile_data.get('about', 'N/A')}")
+        formatted_parts.append(f"specialties: {format_list(profile_data.get('specialties', []))}")
+        formatted_parts.append(f"collaboration_style: {profile_data.get('preferred_collaboration_style', 'N/A')}")
+        
+        # Audience & Performance Metrics
+        formatted_parts.append(f"followers: {profile_data.get('followers', 'N/A')}")
+        formatted_parts.append(f"followers_numeric: {profile_data.get('followers_numeric', 0)}")
+        formatted_parts.append(f"audience_type: {profile_data.get('audienceType', 'N/A')}")
+        formatted_parts.append(f"engagement: {profile_data.get('engagement', 'N/A')}")
+        formatted_parts.append(f"engagement_numeric: {profile_data.get('engagement_rate_numeric', 0)}")
+        formatted_parts.append(f"avg_views: {profile_data.get('avgViews', 'N/A')}")
+        formatted_parts.append(f"avg_views_numeric: {profile_data.get('average_views_numeric', 0)}")
+        
+        # Demographics & Insights  
+        demographics = profile_data.get('audience_demographics', {})
+        if demographics:
+            formatted_parts.append(f"demographics: {format_object(demographics)}")
+        
+        performance = profile_data.get('performance_metrics', {})
+        if performance:
+            formatted_parts.append(f"performance: {format_object(performance)}")
+        
+        # Location & Languages
+        formatted_parts.append(f"location: {profile_data.get('location', 'N/A')}")
+        formatted_parts.append(f"languages: {format_list(profile_data.get('languages', []))}")
+        
+        # Business & Collaboration Details
+        formatted_parts.append(f"collaboration_rate: {profile_data.get('collaboration_rate', 0)}")
+        
+        rate_history = profile_data.get('rate_history', {})
+        if rate_history:
+            formatted_parts.append(f"rate_history: {format_object(rate_history)}")
+            
+        formatted_parts.append(f"availability: {profile_data.get('availability', 'N/A')}")
+        formatted_parts.append(f"last_campaign: {profile_data.get('last_campaign_date', 'N/A')}")
+        
+        recent_campaigns = profile_data.get('recent_campaigns', [])
+        if recent_campaigns:
+            campaigns_str = "; ".join(f"{camp.get('brand', 'N/A')} ({camp.get('date', 'N/A')})" for camp in recent_campaigns[:3])
+            formatted_parts.append(f"recent_campaigns: {campaigns_str}")
+        
+        # Calculated Metrics
+        formatted_parts.append(f"creator_tier: {profile_data.get('creator_tier', 'N/A')}")
+        formatted_parts.append(f"estimated_cpm: ${profile_data.get('estimated_cpm', 0)}")
+        
+        # Join all parts with appropriate separators
+        return " | ".join(formatted_parts)
     
     # Mock methods for testing
     async def _mock_enhanced_call(

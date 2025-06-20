@@ -303,6 +303,19 @@ class CampaignOrchestrator:
         logger.info(f"✅ Discovery complete: Found {len(discovered_influencers)} matching influencers")
         for i, match in enumerate(discovered_influencers):
             logger.info(f"  {i+1}. {match.creator.name} - {match.similarity_score:.2f} similarity, ${match.estimated_rate:,}")
+        
+        # 📝 NEW: Log influencer discovery to outreach_logs table
+        if discovered_influencers:
+            try:
+                from services.outreach_logger import outreach_logger
+                await outreach_logger.log_influencer_discovery(
+                    campaign_id=state.campaign_id,
+                    discovered_influencers=discovered_influencers
+                )
+                logger.info(f"📝 Logged discovery of {len(discovered_influencers)} influencers to outreach_logs")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to log influencer discovery: {str(e)}")
+                # Don't fail the discovery phase if logging fails
     
     async def _run_negotiation_phase(
         self,
